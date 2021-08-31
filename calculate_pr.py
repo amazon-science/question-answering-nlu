@@ -3,102 +3,134 @@
 # SPDX-License-Identifier: CC-BY-NC-4.0
 
 import argparse
-import copy
 import json
+import sklearn.metrics
+from metrics.accuracy import conlleval
+
+intents = [
+    "atis_flight",
+    "atis_airfare",
+    "atis_ground_service",
+    "atis_airline",
+    "atis_abbreviation",
+    "atis_aircraft",
+    "atis_flight_time",
+    "atis_quantity",
+    "atis_airport",
+    "atis_city",
+    "atis_distance",
+    "atis_ground_fare",
+    "atis_capacity",
+    "atis_flight_no",
+    "atis_meal",
+    "atis_restriction",
+    "atis_cheapest",
+    "atis_day_name"
+]
 
 
-def main(pred_file, test_file, cls):
+def get_rec_intent(rec, predictions_):
+    rec_intents = []
+    pred_intents = []
+    for qa in rec['qas']:
+        if qa['id'].startswith("intent_"):
+            if qa['answers'][0]['text'] == "yes":
+                rec_intents.append(qa['intent'])
+            if predictions_[qa['id']] == "yes":
+                pred_intents.append(qa['intent'])
+
+    first_ind = 1000
+    for intent in rec_intents:
+        if intents.index(intent) < first_ind:
+            first_ind = intents.index(intent)
+
+    first_ind_pred = 1000
+    for intent in pred_intents:
+        if intents.index(intent) < first_ind_pred:
+            first_ind_pred = intents.index(intent)
+
+    return first_ind, first_ind_pred
+
+
+def qanlu_rec_to_conll(rec, predictions_):
+    context = rec['context']
+    slots = []
+    preds = []
+
+    for qa in rec['qas']:
+        if not qa['id'].startswith("intent_") and qa['answers']:
+            slots.append(
+                {'slot': qa['slot'], 'ans': qa['answers'][0]['text'], 'start': qa['answers'][0]['answer_start']})
+
+        pred_ans = predictions_[qa['id']]
+
+        if not qa['id'].startswith("intent_") and pred_ans:
+            preds.append({'slot': qa['slot'], 'ans': pred_ans, 'start': context.find(pred_ans)})
+
+    slots = sorted(slots, key=lambda i: i['start'], reverse=False)
+    preds = sorted(preds, key=lambda i: i['start'], reverse=False)
+
+    prev = 0
+    labels = []
+    for slot in slots:
+        curr = slot['start']
+        prev_sent = context[prev:curr]
+        labels.extend(['O'] * len(prev_sent.split()))
+        curr_slot_split = slot['ans'].split()
+        labels.append('B-' + slot['slot'])
+        if len(curr_slot_split) > 1:
+            for _ in curr_slot_split[1:]:
+                labels.append('I-' + slot['slot'])
+        prev = slot['start'] + len(slot['ans']) + 1
+
+    labels.extend(['O'] * len(context[prev:].split()))
+    y_true = labels
+
+    prev = 0
+    labels = []
+    for slot in preds:
+        curr = slot['start']
+        prev_sent = context[prev:curr]
+        labels.extend(['O'] * len(prev_sent.split()))
+        curr_slot_split = slot['ans'].split()
+        labels.append('B-' + slot['slot'])
+
+        if len(curr_slot_split) > 1:
+            for _ in curr_slot_split[1:]:
+                labels.append('I-' + slot['slot'])
+
+        prev = slot['start'] + len(slot['ans']) + 1
+
+    labels.extend(['O'] * len(context[prev:].split()))
+    y_pred = labels
+
+    return y_true, y_pred, context.split()
+
+
+def main(pred_file, test_file):
     squad_nlu_test = json.load(open(test_file))
     test_pred = json.load(open(pred_file))
-    scores_dict = {}
-    d = {'nb_correct': 0, 'nb_pred': 0, 'nb_true': 0}
-    intent_scores_dict = {}
-    intent_dico = {'true_pos': 0, 'false_pos': 0, 'true_neg': 0, 'false_neg': 0, 'unrel': 0}
+    labels_val = []
+    labels_pred_val = []
+    words = []
 
-    for sentence in squad_nlu_test['data'][0]['paragraphs']:
-        for qa in sentence['qas']:
-            if not qa['id'].startswith("intent_"):
-                if qa['slot'] not in scores_dict.keys():
-                    scores_dict[qa['slot']] = copy.deepcopy(d)
-                if not qa['is_impossible']:
-                    if qa['answers'][0]['text'] == test_pred[qa['id']]:
-                        scores_dict[qa['slot']]['nb_correct'] += 1
-                        scores_dict[qa['slot']]['nb_pred'] += 1
-                        scores_dict[qa['slot']]['nb_true'] += 1
-                    else:
-                        if test_pred[qa['id']]:
-                            scores_dict[qa['slot']]['nb_pred'] += 1
-                        scores_dict[qa['slot']]['nb_true'] += 1
-                else:
-                    if test_pred[qa['id']]:
-                        scores_dict[qa['slot']]['nb_pred'] += 1
-            else:
-                if qa['intent'] not in intent_scores_dict.keys():
-                    intent_scores_dict[qa['intent']] = copy.deepcopy(intent_dico)
-                if qa['answers'][0]['text'] == test_pred[qa['id']]:
-                    if qa['answers'][0]['text'] == "yes":
-                        intent_scores_dict[qa['intent']]['true_pos'] += 1
-                    elif qa['answers'][0]['text'] == "no":
-                        intent_scores_dict[qa['intent']]['true_neg'] += 1
-                    else:
-                        raise ValueError("Wrong value of intent yes or no answer!")
-                else:
-                    if qa['answers'][0]['text'] == "yes":
-                        if test_pred[qa['id']] == "no":
-                            intent_scores_dict[qa['intent']]['false_neg'] += 1
-                        else:
-                            intent_scores_dict[qa['intent']]['unrel'] += 1
-                    else:
-                        assert qa['answers'][0]['text'] == "no"
-                        if test_pred[qa['id']] == "yes":
-                            intent_scores_dict[qa['intent']]['false_pos'] += 1
-                        else:
-                            intent_scores_dict[qa['intent']]['unrel'] += 1
+    true_intents = []
+    pred_intents = []
+    for rec in squad_nlu_test['data'][0]['paragraphs']:
+        slot_true, slot_pred, tokens = qanlu_rec_to_conll(rec, test_pred)
+        labels_val.append(slot_true)
+        labels_pred_val.append(slot_pred)
+        words.append(tokens)
 
-    nb_correct = 0
-    nb_pred = 0
-    nb_true = 0
-
-    for i in scores_dict.keys():
-        nb_correct += scores_dict[i]['nb_correct']
-        nb_pred += scores_dict[i]['nb_pred']
-        nb_true += scores_dict[i]['nb_true']
-
-    p = nb_correct / nb_pred if nb_pred > 0 else 0
-    r = nb_correct / nb_true if nb_true > 0 else 0
-    f1 = 2 * p * r / (p + r) if p + r > 0 else 0
-
-    print("Precision: ", p)
-    print("Recall: ", r)
-    print("F1: ", f1)
-
-    if cls:
         # Intent
-        true_pos = 0
-        false_pos = 0
-        true_neg = 0
-        false_neg = 0
-        # Unrelated answer; any thing other than yes or no
-        unrel = 0
+        true_intent_index, pred_intent_index = get_rec_intent(rec, test_pred)
+        true_intents.append(true_intent_index)
+        pred_intents.append(pred_intent_index)
 
-        for intent in intent_scores_dict.keys():
-            true_pos += intent_scores_dict[intent]['true_pos']
-            false_pos += intent_scores_dict[intent]['false_pos']
-            true_neg += intent_scores_dict[intent]['true_neg']
-            false_neg += intent_scores_dict[intent]['false_neg']
-            unrel += intent_scores_dict[intent]['unrel']
-
-        cls_p = true_pos / (true_pos + false_pos + unrel) if (true_pos + false_pos + unrel) > 0 else 0
-        cls_r = true_pos / (true_pos + false_neg) if (true_pos + false_neg) > 0 else 0
-        cls_f1 = 2 * cls_p * cls_r / (cls_p + cls_r) if (cls_p + cls_r) > 0 else 0
-
-        intent_result = {'cls_p': cls_p, 'cls_r': cls_r, 'cls_f1': cls_f1}
-        print("true_pos: ", true_pos, "false_pos: ", false_pos , "true_neg: ", true_neg, "false_neg: ", false_neg, "unrel: ", unrel)
-
-        results = {"slot": {"Precision": p, "Recall": r, "F1": f1}, "intent": intent_result}
-    else:
-        results = {"slot": {"Precision": p, "Recall": r, "F1": f1}}
-    print("Results: ", results)
+    con_dict = conlleval(labels_pred_val, labels_val, words, 'measure.txt')
+    intent_acc = sklearn.metrics.accuracy_score(true_intents, pred_intents)
+    print("Intent Accuracy: %.4f" % intent_acc)
+    print('Precision = {}, Recall = {}, F1 = {}'.format(con_dict['r'], con_dict['p'], con_dict['f1']))
 
 
 if __name__ == '__main__':
@@ -108,19 +140,13 @@ if __name__ == '__main__':
         default=None,
         type=str,
         required=True,
-        help="Full path to the file that contains predictions. Written by the HF's QA model")
+        help="Full path to the file that contains predictions. Written by the QA model.")
     parser.add_argument(
         "--test_file",
         default=None,
         type=str,
         required=True,
-        help="Full path to the QA test file")
-    parser.add_argument(
-        "--cls",
-        default=False,
-        type=bool,
-        help="Whether there is classification too?"
-    )
+        help="Full path to the QA test file.")
     args = parser.parse_args()
 
-    main(args.pred_file, args.test_file, args.cls)
+    main(args.pred_file, args.test_file)
