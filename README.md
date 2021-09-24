@@ -55,7 +55,12 @@ python atis.py \
 The output of this process will be in the exact format of SQuAD and can be used
 to train question answering models. The next step would be to train a question answering model,
 see [here](https://huggingface.co/transformers/master/custom_datasets.html#question-answering-with-squad-2-0)
-for a guide. Alternatively, you can download a trained model directly from [huggingface](TBC).
+for a guide. Alternatively, you can download a QA model trained on SQuAD-v2 directly from 
+huggingface [here](https://huggingface.co/models?sort=downloads&search=squad), and fine-tune it with
+the MATIS++ NLU data parsed into SQuAD format. Please note that we need a model trained on
+SQuAD-v2 in order to support negative examples.
+ 
+A QANLU model trained using SQuAD-v2 and MATIS++ (English) is also available from huggingface [here](TBD).
 
 In order to calculate precision, recall, and F1 for predictions done on QANLU test sets by the 
 fine-tuned question answering model, you need to call:
@@ -64,6 +69,71 @@ fine-tuned question answering model, you need to call:
 python calculate_pr.py \
     --pred_file <full path to the predictions file created by transformers> \
     --test_file <full path to the test file that the predictions are for>
+```
+
+### Example
+
+In this example, we show how to train QANLU on English MATIS (i.e. the original ATIS). We assume that
+MATIS has been downloaded at a folder called `MATIS` in the root directory of this repository.
+
+The first step is to convert the data into SQuAD format:
+
+```
+mkdir data
+
+python atis.py \
+       --data_path MATIS/data/train_dev_test \
+       --languages en \
+       --qas_file MATIS_questions.json \
+       --output_dir data
+```
+
+The next step is to fine-tune a SQuAD-trained QA model on the data we just created. For this
+example, we will use the `deepset/roberta-base-squad2` model from [huggingface](https://huggingface.co/deepset/roberta-base-squad2).
+To do the fine-tuning, we will use the `run_squad.py` script from [here](https://github.com/huggingface/transformers/blob/master/examples/legacy/question-answering/run_squad.py)
+(assuming 8 GPUs present):
+
+```
+mkdir models
+
+python -m torch.distributed.launch --nproc_per_node=8 run_squad.py \
+    --model_type roberta \
+    --model_name_or_path deepset/roberta-base-squad2 \
+    --do_train \
+    --do_eval \
+    --do_lower_case \
+    --train_file data/matis_en_train_squad.json \
+    --predict_file data/matis_en_test_squad.json \
+    --learning_rate 3e-5 \
+    --num_train_epochs 2 \
+    --max_seq_length 384 \
+    --doc_stride 64 \
+    --output_dir models/qanlu/ \
+    --per_gpu_train_batch_size 8 \
+    --overwrite_output_dir \
+    --version_2_with_negative \
+    --save_steps 100000 \
+    --gradient_accumulation_steps 8 \
+    --seed $RANDOM
+```
+
+Once our model is fine-tuned with MATIS++ data, the model will be saved in the `models/qanlu/`.
+The final step is to calculate performance metrics:
+
+```
+python calculate_pr.py 
+    --pred_file models/qanlu/predictions_.json 
+    --test_file data/matis_en_test.json >> results_matis_en.txt
+```
+
+The output should look like this:
+
+```
+atis_en.txt 
+Precision:  0.9613439306358381
+Recall:  0.9582283039250991
+F1:  0.9597835888187556
+Results:  {'slot': {'Precision': 0.9613439306358381, 'Recall': 0.9582283039250991, 'F1': 0.9597835888187556}}
 ```
 
 ## Citation
