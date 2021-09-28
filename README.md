@@ -60,7 +60,7 @@ huggingface [here](https://huggingface.co/models?sort=downloads&search=squad), a
 the MATIS++ NLU data parsed into SQuAD format. Please note that we need a model trained on
 SQuAD-v2 in order to support negative examples.
  
-A QANLU model trained using SQuAD-v2 and MATIS++ (English) is also available from huggingface [here](TBD).
+A QANLU model trained using SQuAD-v2 and MATIS++ (English) is also available from huggingface [here](https://huggingface.co/AmazonScience/qanlu).
 
 In order to calculate precision, recall, and F1 for predictions done on QANLU test sets by the 
 fine-tuned question answering model, you need to call:
